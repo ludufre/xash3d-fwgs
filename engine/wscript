@@ -312,7 +312,7 @@ def build(bld):
 						  '-lidbfs.js', '-lwebgl.js', '-lopenal.js', '-lasync.js', '-sNO_POLYFILL',
 						  '-sINITIAL_MEMORY=512mb', '-sSTACK_SIZE=32mb', '-sALLOW_MEMORY_GROWTH=1',
 						  '-sMAX_WEBGL_VERSION=2', '-sMIN_WEBGL_VERSION=2', '-sFULL_ES2', # works ok with gl2shim
-						  '-sEXPORTED_RUNTIME_METHODS=callMain,addRunDependency,removeRunDependency,FS',
+						  '-sEXPORTED_RUNTIME_METHODS=callMain,addRunDependency,removeRunDependency,FS,ccall',
 						  '-sMODULARIZE', '-sEXPORT_NAME=Xash3D']
 
 		f(source = source,
