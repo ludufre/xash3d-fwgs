@@ -1191,6 +1191,16 @@ static void Sys_Quit_f( void )
 	Sys_Quit( "command" );
 }
 
+#if XASH_EMSCRIPTEN
+static void Host_MainLoop( void *userdata )
+{
+	double *poldtime = (double *)userdata;
+	double newtime = Sys_DoubleTime();
+	COM_Frame( newtime - *poldtime );
+	*poldtime = newtime;
+}
+#endif
+
 /*
 =================
 Host_Main
@@ -1201,8 +1211,10 @@ int EXPORT Host_Main( int argc, char **argv, const char *progname, int bChangeGa
 	static double oldtime;
 	string demoname, exename;
 
+#if !XASH_EMSCRIPTEN
 	if( setjmp( return_from_main_buf ))
 		return error_on_exit;
+#endif
 
 	host.starttime = Platform_DoubleTime();
 
@@ -1350,6 +1362,7 @@ int EXPORT Host_Main( int argc, char **argv, const char *progname, int bChangeGa
 	// check after all configs were executed
 	HPAK_CheckIntegrity( hpk_custom_file.string );
 
+#if !XASH_EMSCRIPTEN
 	// main window message loop
 	while( host.status != HOST_CRASHED )
 	{
@@ -1357,6 +1370,10 @@ int EXPORT Host_Main( int argc, char **argv, const char *progname, int bChangeGa
 		COM_Frame( newtime - oldtime );
 		oldtime = newtime;
 	}
+#else // XASH_EMSCRIPTEN
+EM_ASM( { Module.callbacks?.gameReady?.() } );
+emscripten_set_main_loop_arg( Host_MainLoop, &oldtime, 0, false );
+#endif // XASH_EMSCRIPTEN
 
 	return 0;
 }
