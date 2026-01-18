@@ -38,6 +38,7 @@ typedef byte     rgb_t[3];  // unsigned byte colorpack
 typedef vec_t    matrix3x4[3][4] MAYBE_ALIGNED( 16 );
 typedef vec_t    matrix4x4[4][4] MAYBE_ALIGNED( 16 );
 typedef uint32_t poolhandle_t;
+typedef uint16_t word;
 typedef uint32_t dword;
 typedef char     string[MAX_STRING];
 typedef off_t    fs_offset_t;
@@ -84,13 +85,9 @@ typedef int qboolean;
 	#if defined( __i386__ )
 		#define EXPORT         __attribute__(( visibility( "default" ), force_align_arg_pointer ))
 		#define GAME_EXPORT    __attribute__(( force_align_arg_pointer ))
-	#elif defined( XASH_EMSCRIPTEN )
-		#define EXPORT         __attribute__(( used )) // see EMSCRIPTE_KEEPALIVE
-		#define GAME_EXPORT
-	#else
-		#define EXPORT         __attribute__(( visibility ( "default" )))
-		#define GAME_EXPORT
-	#endif
+	#else // !defined( __i386__ )
+		#define EXPORT __attribute__(( visibility ( "default" )))
+	#endif // !defined( __i386__ )
 
 	#if __GNUC__ >= 11
 		// might want to set noclone due to https://gcc.gnu.org/bugzilla/show_bug.cgi?id=116893

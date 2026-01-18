@@ -5,7 +5,7 @@ addToLibrary({
     emscripten_net_sendto: (fd, buf, len, flags, sockaddr, socklen) =>
         Module.net?.sendto?.(fd, buf, len, flags, sockaddr, socklen) ?? -1,
 
-    emscripten_net_sendto_batch: (fd, bufs, lens, flags, sockaddr, socklen) =>
+	emscripten_net_sendto_batch: (fd, bufs, lens, flags, sockaddr, socklen) =>
         Module.net?.sendto_batch?.(fd, bufs, lens, flags, sockaddr, socklen) ?? -1,
 
     emscripten_net_socket: (family, type, protocol) =>

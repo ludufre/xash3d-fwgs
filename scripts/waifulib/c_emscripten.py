@@ -52,7 +52,7 @@ def gxx_modifier_emscripten(conf):
 	conf.env.CXXFLAGS_cxxstlib = ['-fPIC']
 	conf.env.CXXFLAGS_cxxprogram = ['-sMAIN_MODULE=1']
 
-	conf.env.LINKFLAGS_cxxshlib = ['-sSIDE_MODULE=1', '-Oz']
+	conf.env.LINKFLAGS_cxxshlib = ['-sSIDE_MODULE=1']
 	conf.env.LINKFLAGS_cxxprogram = ['-sMAIN_MODULE=1']
 
 @feature('cxxprogram', 'cprogram')
