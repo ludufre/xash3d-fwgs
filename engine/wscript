@@ -322,6 +322,7 @@ def build(bld):
 						  '-sINITIAL_MEMORY=256mb', '-sSTACK_SIZE=16mb', '-Oz', '--closure 1', '--minify-wasm-imports',
 						  '-sMAX_WEBGL_VERSION=2', '-sMIN_WEBGL_VERSION=2', '-sFULL_ES2', # works ok with gl2shim
 						  '-sEXPORTED_RUNTIME_METHODS=callMain,addRunDependency,removeRunDependency,FS,ccall',
+						  '-sEXPORTED_FUNCTIONS=_main,_Cmd_ExecuteString,_Engine_FileDownloadComplete,_getErrnoLocation',
 						  '-sMODULARIZE', '-sEXPORT_NAME=Xash3D']
 
 		f(source = source,

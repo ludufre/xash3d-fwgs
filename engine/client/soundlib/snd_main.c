@@ -132,7 +132,13 @@ load_internal:
 	}
 
 	if( filename[0] != '#' )
-		Con_DPrintf( S_WARN "%s: couldn't load \"%s\"\n", __func__, loadname );
+	{
+#ifdef XASH_EMSCRIPTEN
+		// Don't warn if file is being lazy-loaded
+		if( !FS_IsEAGAIN( ))
+#endif
+			Con_DPrintf( S_WARN "%s: couldn't load \"%s\"\n", __func__, loadname );
+	}
 
 	return NULL;
 }

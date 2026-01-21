@@ -30,6 +30,13 @@ GNU General Public License for more details.
 #define CL_CONNECTION_RETRIES 5
 #define CL_TEST_RETRIES       5
 
+#ifdef XASH_EMSCRIPTEN
+// Flag to indicate precache needs retry due to EAGAIN (lazy loading)
+static qboolean cls_precache_pending = false;
+static double cls_precache_retry_time = 0.0;
+#define CL_PRECACHE_RETRY_DELAY 0.1 // 100ms between retries
+#endif
+
 CVAR_DEFINE_AUTO( showpause, "1", 0, "show pause logo when paused" );
 CVAR_DEFINE_AUTO( mp_decals, "300", FCVAR_ARCHIVE, "decals limit in multiplayer" );
 static CVAR_DEFINE_AUTO( dev_overview, "0", 0, "draw level in overview-mode" );
@@ -1520,6 +1527,10 @@ CL_ClearState
 void CL_ClearState( void )
 {
 	int	i;
+
+#ifdef XASH_EMSCRIPTEN
+	cls_precache_pending = false;
+#endif
 
 	CL_ClearResourceLists();
 
@@ -3113,10 +3124,51 @@ static qboolean CL_ShouldRescanFilesystem( void )
 qboolean CL_PrecacheResources( void )
 {
 	resource_t	*pRes;
+#ifdef XASH_EMSCRIPTEN
+	qboolean	had_eagain = false;
+#endif
 
 	// if we downloaded new WAD files or any other archives they must be added to searchpath
 	if( CL_ShouldRescanFilesystem( ))
 		FS_Rescan_f();
+
+#ifdef XASH_EMSCRIPTEN
+	// IMPORTANT: Check generic files (WADs) BEFORE loading world model
+	// WAD textures are needed during world loading, so they must be downloaded first
+	Con_Printf( "EAGAIN: Pre-world check starting...\n" );
+	for( pRes = cl.resourcesonhand.pNext; pRes && pRes != &cl.resourcesonhand; pRes = pRes->pNext )
+	{
+		qboolean exists;
+
+		if( FBitSet( pRes->ucFlags, RES_PRECACHED ))
+			continue;
+
+		if( pRes->type != t_generic )
+			continue;
+
+		// Check if file exists to trigger lazy loading for WADs
+		FS_ClearEAGAIN();
+		exists = FS_FileExists( pRes->szFileName, false );
+		Con_Printf( "EAGAIN: Pre-world check '%s': exists=%d, eagain=%d\n",
+			pRes->szFileName, exists, FS_IsEAGAIN() );
+
+		if( !exists && FS_IsEAGAIN( ))
+		{
+			Con_Printf( "EAGAIN: WAD/generic file pending (pre-world): %s\n", pRes->szFileName );
+			had_eagain = true;
+			// Don't continue - keep checking other WADs to trigger parallel downloads
+		}
+	}
+	Con_Printf( "EAGAIN: Pre-world check done, had_eagain=%d\n", had_eagain );
+
+	// If any WADs are still downloading, wait before loading world
+	if( had_eagain )
+	{
+		Con_Printf( "EAGAIN: Waiting for WADs before loading world...\n" );
+		cls_precache_pending = true;
+		return false;
+	}
+#endif
 
 	// NOTE: world need to be loaded as first model
 	for( pRes = cl.resourcesonhand.pNext; pRes && pRes != &cl.resourcesonhand; pRes = pRes->pNext )
@@ -3127,7 +3179,21 @@ qboolean CL_PrecacheResources( void )
 		if( pRes->type != t_model || pRes->nIndex != WORLD_INDEX )
 			continue;
 
+#ifdef XASH_EMSCRIPTEN
+		FS_ClearEAGAIN();
+#endif
 		cl.models[pRes->nIndex] = Mod_LoadWorld( pRes->szFileName, true );
+#ifdef XASH_EMSCRIPTEN
+		// If EAGAIN, world is still loading - don't mark as precached yet
+		if( FS_IsEAGAIN( ))
+		{
+			Con_Printf( "EAGAIN: World loading pending: %s\n", pRes->szFileName );
+			had_eagain = true;
+			// World must load before we can continue, so return early
+			cls_precache_pending = true;
+			return false;
+		}
+#endif
 		SetBits( pRes->ucFlags, RES_PRECACHED );
 		cl.nummodels = 1;
 		break;
@@ -3141,7 +3207,19 @@ qboolean CL_PrecacheResources( void )
 
 		if( pRes->type == t_model && pRes->szFileName[0] == '*' )
 		{
+#ifdef XASH_EMSCRIPTEN
+			FS_ClearEAGAIN();
+#endif
 			cl.models[pRes->nIndex] = Mod_ForName( pRes->szFileName, false, false );
+#ifdef XASH_EMSCRIPTEN
+			// If EAGAIN, model is still loading - don't mark as precached yet
+			if( FS_IsEAGAIN( ))
+			{
+				Con_Printf( "EAGAIN: Submodel loading pending: %s\n", pRes->szFileName );
+				had_eagain = true;
+				continue; // Continue to next submodel, allow parallel downloads
+			}
+#endif
 			cl.nummodels = Q_max( cl.nummodels, pRes->nIndex + 1 );
 			SetBits( pRes->ucFlags, RES_PRECACHED );
 
@@ -3158,6 +3236,15 @@ qboolean CL_PrecacheResources( void )
 		}
 	}
 
+#ifdef XASH_EMSCRIPTEN
+	// If any submodels are still loading, return and retry later
+	if( had_eagain )
+	{
+		cls_precache_pending = true;
+		return false;
+	}
+#endif
+
 	if( cls.state != ca_active )
 		S_BeginRegistration();
 
@@ -3166,6 +3253,10 @@ qboolean CL_PrecacheResources( void )
 	{
 		if( FBitSet( pRes->ucFlags, RES_PRECACHED ))
 			continue;
+
+#ifdef XASH_EMSCRIPTEN
+		FS_ClearEAGAIN();
+#endif
 
 		switch( pRes->type )
 		{
@@ -3185,6 +3276,14 @@ qboolean CL_PrecacheResources( void )
 
 					if( !cl.sound_index[pRes->nIndex] )
 					{
+#ifdef XASH_EMSCRIPTEN
+						// Don't disconnect if EAGAIN - file is being downloaded
+						if( FS_IsEAGAIN( ))
+						{
+							had_eagain = true;
+							continue;
+						}
+#endif
 						if( FBitSet( pRes->ucFlags, RES_FATALIFMISSING ))
 						{
 							S_EndRegistration();
@@ -3214,6 +3313,14 @@ qboolean CL_PrecacheResources( void )
 
 						if( cl.models[pRes->nIndex] == NULL )
 						{
+#ifdef XASH_EMSCRIPTEN
+							// Don't disconnect if EAGAIN - file is being downloaded
+							if( FS_IsEAGAIN( ))
+							{
+								had_eagain = true;
+								continue;
+							}
+#endif
 							if( FBitSet( pRes->ucFlags, RES_FATALIFMISSING ))
 							{
 								S_EndRegistration();
@@ -3231,13 +3338,35 @@ qboolean CL_PrecacheResources( void )
 			break;
 		case t_decal:
 			if( !FBitSet( pRes->ucFlags, RES_CUSTOM ) && pRes->nIndex >= 0 && pRes->nIndex < ARRAYSIZE( host.draw_decals ))
+			{
 				Q_strncpy( host.draw_decals[pRes->nIndex], pRes->szFileName, sizeof( host.draw_decals[0] ));
+#ifdef XASH_EMSCRIPTEN
+				// Check if decal file exists to trigger lazy loading
+				FS_ClearEAGAIN();
+				if( !FS_FileExists( pRes->szFileName, false ) && FS_IsEAGAIN( ))
+				{
+					Con_Printf( "EAGAIN: Decal pending: %s\n", pRes->szFileName );
+					had_eagain = true;
+					continue;
+				}
+#endif
+			}
 			break;
 		case t_generic:
 			if( pRes->nIndex >= 0 && pRes->nIndex < ARRAYSIZE( cl.files_precache ))
 			{
 				Q_strncpy( cl.files_precache[pRes->nIndex], pRes->szFileName, sizeof( cl.files_precache[0] ));
 				cl.numfiles = Q_max( cl.numfiles, pRes->nIndex + 1 );
+#ifdef XASH_EMSCRIPTEN
+				// Check if file exists to trigger lazy loading for WADs and other generic files
+				FS_ClearEAGAIN();
+				if( !FS_FileExists( pRes->szFileName, false ) && FS_IsEAGAIN( ))
+				{
+					Con_Printf( "EAGAIN: Generic file pending: %s\n", pRes->szFileName );
+					had_eagain = true;
+					continue;
+				}
+#endif
 			}
 			break;
 		case t_eventscript:
@@ -3245,14 +3374,90 @@ qboolean CL_PrecacheResources( void )
 			{
 				Q_strncpy( cl.event_precache[pRes->nIndex], pRes->szFileName, sizeof( cl.event_precache[0] ));
 				CL_SetEventIndex( cl.event_precache[pRes->nIndex], pRes->nIndex );
+#ifdef XASH_EMSCRIPTEN
+				// Check if file exists to trigger lazy loading
+				FS_ClearEAGAIN();
+				if( !FS_FileExists( pRes->szFileName, false ) && FS_IsEAGAIN( ))
+				{
+					Con_Printf( "EAGAIN: Event script pending: %s\n", pRes->szFileName );
+					had_eagain = true;
+					continue;
+				}
+#endif
 			}
 			break;
 		default:
 			break;
 		}
 
+#ifdef XASH_EMSCRIPTEN
+		// If EAGAIN, resource is still loading - don't mark as precached yet
+		if( FS_IsEAGAIN( ))
+		{
+			had_eagain = true;
+			continue; // Continue to next resource, allow parallel downloads
+		}
+#endif
 		SetBits( pRes->ucFlags, RES_PRECACHED );
 	}
+
+#ifdef XASH_EMSCRIPTEN
+	// Check skybox files - they're not in the resource list but needed for rendering
+	Con_Printf( "EAGAIN: Checking skybox, skyName='%s'\n", clgame.movevars.skyName );
+	if( COM_CheckString( clgame.movevars.skyName ))
+	{
+		static const char *skybox_ext[3] = { "dds", "tga", "bmp" };
+		static const char *skybox_suffix[6] = { "bk", "dn", "ft", "lf", "rt", "up" };
+		static const char *skybox_delim[2] = { "", "_" };
+		char loadname[MAX_QPATH];
+		int i, len;
+
+		Q_snprintf( loadname, sizeof( loadname ), "gfx/env/%s", clgame.movevars.skyName );
+		COM_StripExtension( loadname );
+		len = Q_strlen( loadname );
+		if( len > 0 && loadname[len - 1] == '_' )
+			loadname[len - 1] = '\0';
+
+		Con_Printf( "EAGAIN: Skybox loadname='%s'\n", loadname );
+
+		// Check all skybox files
+		for( i = 0; i < 3 && !had_eagain; i++ ) // extensions
+		{
+			int j;
+			for( j = 0; j < 2 && !had_eagain; j++ ) // delimiters
+			{
+				int k;
+				for( k = 0; k < 6; k++ ) // sides
+				{
+					char sidename[MAX_QPATH];
+					Q_snprintf( sidename, sizeof( sidename ), "%s%s%s.%s",
+						loadname, skybox_delim[j], skybox_suffix[k], skybox_ext[i] );
+
+					FS_ClearEAGAIN();
+					// Just check if file exists - this will trigger download if in manifest
+					FS_FileExists( sidename, false );
+					if( FS_IsEAGAIN( ))
+					{
+						Con_Printf( "EAGAIN: Skybox file pending: %s\n", sidename );
+						had_eagain = true;
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	// If any resources had EAGAIN, return and retry later
+	if( had_eagain )
+	{
+		Con_Printf( "EAGAIN: Some resources still loading, will retry...\n" );
+		cls_precache_pending = true;
+		return false;
+	}
+	// All resources precached successfully - clear pending flag
+	Con_Printf( "EAGAIN: All resources precached successfully!\n" );
+	cls_precache_pending = false;
+#endif
 
 	// make sure modelcount is in-range
 	cl.nummodels = bound( 0, cl.nummodels, MAX_MODELS );
@@ -3585,6 +3790,40 @@ void Host_ClientFrame( void )
 
 	// procssing resources on handle
 	while( CL_RequestMissingResources( ));
+
+#ifdef XASH_EMSCRIPTEN
+	// Retry precache if pending (lazy loading completed files)
+	// Use cooldown to avoid hammering downloads
+	if( cls_precache_pending && cls.state != ca_active && cls.state != ca_disconnected )
+	{
+		if( host.realtime >= cls_precache_retry_time )
+		{
+			byte	msg_buf[MAX_INIT_MSG];
+			sizebuf_t msg;
+
+			Con_Printf( "EAGAIN: Retrying precache (state=%d)...\n", cls.state );
+
+			MSG_Init( &msg, "Resource Registration", msg_buf, sizeof( msg_buf ));
+
+			if( CL_PrecacheResources( ))
+			{
+				Con_Printf( "EAGAIN: Precache complete, registering resources\n" );
+				CL_RegisterResources( &msg, cls.legacymode );
+			}
+			else
+			{
+				// Still pending - set next retry time
+				cls_precache_retry_time = host.realtime + CL_PRECACHE_RETRY_DELAY;
+			}
+
+			if( MSG_GetNumBytesWritten( &msg ) > 0 )
+			{
+				Netchan_CreateFragments( &cls.netchan, &msg );
+				Netchan_FragSend( &cls.netchan );
+			}
+		}
+	}
+#endif
 
 	// handle thirdperson camera
 	CL_MoveThirdpersonCamera();

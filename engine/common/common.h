@@ -409,6 +409,13 @@ byte *FS_LoadFile( const char *path, fs_offset_t *filesizeptr, qboolean gamediro
 	MALLOC_LIKE( _Mem_Free, 1 ) WARN_UNUSED_RESULT;
 byte *FS_LoadDirectFile( const char *path, fs_offset_t *filesizeptr )
 	MALLOC_LIKE( _Mem_Free, 1 ) WARN_UNUSED_RESULT;
+qboolean FS_IsEAGAIN( void );
+void FS_ClearEAGAIN( void );
+byte *FS_LoadFileWithEAGAIN( const char *path, fs_offset_t *filesizeptr, qboolean gamedironly, qboolean *eagain )
+	MALLOC_LIKE( _Mem_Free, 1 ) WARN_UNUSED_RESULT;
+#ifdef XASH_EMSCRIPTEN
+qboolean FS_FileExistsInManifest( const char *path );
+#endif
 void FS_Rescan_f( void );
 void FS_LoadGameInfo( void );
 void FS_SaveVFSConfig( void );

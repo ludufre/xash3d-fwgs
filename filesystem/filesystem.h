@@ -239,6 +239,13 @@ typedef struct fs_api_t
 	qboolean (*GetRootDirectory)( char *path, size_t size );
 
 	void (*MakeGameInfo)( void );
+
+	// EAGAIN / lazy loading support (Emscripten only)
+	// Returns true if the last filesystem operation returned EAGAIN
+	qboolean (*IsEAGAIN)( void );
+
+	// Clear the EAGAIN flag
+	void (*ClearEAGAIN)( void );
 } fs_api_t;
 
 typedef struct fs_interface_t

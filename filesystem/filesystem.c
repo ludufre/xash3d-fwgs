@@ -81,6 +81,11 @@ static char fs_rodir[MAX_SYSPATH];
 static string fs_language;
 static qboolean fs_ext_path = false;	// attempt to read\write from ./ or ../ pathes
 
+#ifdef XASH_EMSCRIPTEN
+static pending_file_t *fs_pending_files = NULL;	// linked list of pending downloads
+static qboolean fs_eagain_pending = false;	// sticky EAGAIN flag for lazy loading
+#endif
+
 typedef struct fs_archive_s
 {
 	const char *ext;
@@ -184,6 +189,13 @@ static void FS_BackupFileName( file_t *file, const char *path, uint options ) {}
 
 static void FS_InitMemory( void );
 static void FS_Purge( file_t* file );
+
+#ifdef XASH_EMSCRIPTEN
+static qboolean FS_CheckEAGAIN( const char *path );
+static void FS_SetEAGAIN( void );
+qboolean FS_IsEAGAIN_FS( void );
+void FS_ClearEAGAIN_FS( void );
+#endif
 
 void _Mem_Free( void *data, const char *filename, int fileline )
 {
@@ -1960,6 +1972,14 @@ file_t *FS_SysOpen( const char *filepath, const char *mode )
 
 	if( fd < 0 )
 	{
+#if XASH_EMSCRIPTEN
+		// Check if this file should trigger EAGAIN (lazy loading)
+		if( errno == ENOENT && mode[0] == 'r' && FS_CheckEAGAIN( filepath ))
+		{
+			FS_SetEAGAIN();
+			return NULL;
+		}
+#endif
 		if( errno != ENOENT )
 			Con_Printf( S_ERROR "%s: can't open file %s: %s\n", __func__, filepath, strerror( errno ));
 
@@ -2247,6 +2267,14 @@ searchpath_t *FS_FindFile( const char *name, int *index, char *fixedname, size_t
 			return &fs_directpath;
 		}
 	}
+
+#if XASH_EMSCRIPTEN
+	// Check if file is in manifest and should trigger lazy loading
+	if( FS_CheckEAGAIN( name ))
+	{
+		FS_SetEAGAIN();
+	}
+#endif
 
 	if( index != NULL )
 		*index = -1;
@@ -3502,6 +3530,245 @@ static qboolean FS_InitInterface( int version, const fs_interface_t *engfuncs )
 	return true;
 }
 
+/*
+=============================================================================
+
+EAGAIN / LAZY LOADING SUPPORT (EMSCRIPTEN ONLY)
+
+=============================================================================
+*/
+
+#ifdef XASH_EMSCRIPTEN
+
+/*
+====================
+FS_FindPendingFile
+
+Find a pending file entry by path
+====================
+*/
+static pending_file_t *FS_FindPendingFile( const char *path )
+{
+	pending_file_t *pf;
+
+	for( pf = fs_pending_files; pf; pf = pf->next )
+	{
+		if( !Q_stricmp( pf->path, path ))
+			return pf;
+	}
+
+	return NULL;
+}
+
+/*
+====================
+FS_AddPendingFile
+
+Add a new pending file entry
+====================
+*/
+static pending_file_t *FS_AddPendingFile( const char *path, file_download_state_t state )
+{
+	pending_file_t *pf = Mem_Calloc( fs_mempool, sizeof( pending_file_t ));
+
+	Q_strncpy( pf->path, path, sizeof( pf->path ));
+	pf->state = state;
+	pf->next = fs_pending_files;
+	fs_pending_files = pf;
+
+	return pf;
+}
+
+/*
+====================
+FS_FileExistsInManifest
+
+Check if file exists in the JS manifest (calls into JavaScript)
+====================
+*/
+qboolean FS_FileExistsInManifest( const char *path )
+{
+	return EM_ASM_INT({
+		var path = UTF8ToString($0);
+		if( Module.callbacks && Module.callbacks.fileExistsInManifest )
+			return Module.callbacks.fileExistsInManifest({ path: path }) ? 1 : 0;
+		return 0;
+	}, path ) != 0;
+}
+
+/*
+====================
+FS_GetFileDownloadState
+
+Get the current download state of a file
+====================
+*/
+file_download_state_t FS_GetFileDownloadState( const char *path )
+{
+	pending_file_t *pf = FS_FindPendingFile( path );
+
+	if( pf )
+		return pf->state;
+
+	// Not in pending list, check manifest
+	if( FS_FileExistsInManifest( path ))
+		return FILE_STATE_AVAILABLE;
+
+	return FILE_STATE_UNKNOWN;
+}
+
+/*
+====================
+FS_RequestFileDownload
+
+Request download of a file from the manifest.
+Returns true if file is immediately available, false if download was triggered.
+====================
+*/
+qboolean FS_RequestFileDownload( const char *path )
+{
+	pending_file_t *pf;
+
+	// Check if already in pending list
+	pf = FS_FindPendingFile( path );
+	if( pf )
+	{
+		if( pf->state == FILE_STATE_READY )
+			return true;  // Already downloaded
+		if( pf->state == FILE_STATE_DOWNLOADING )
+			return false; // Still downloading
+		if( pf->state == FILE_STATE_ERROR )
+			return false; // Failed, don't retry automatically
+	}
+
+	// Check if file is in manifest
+	if( !FS_FileExistsInManifest( path ))
+		return false;
+
+	// Add to pending list and trigger download
+	if( !pf )
+		pf = FS_AddPendingFile( path, FILE_STATE_DOWNLOADING );
+	else
+		pf->state = FILE_STATE_DOWNLOADING;
+
+	// Call JavaScript to start the download
+	EM_ASM({
+		var path = UTF8ToString($0);
+		if( Module.callbacks && Module.callbacks.fetchFile )
+			Module.callbacks.fetchFile({ path: path });
+	}, path );
+
+	return false;  // Download started, not immediately available
+}
+
+/*
+====================
+FS_FileDownloadComplete
+
+Called from JavaScript when a file download completes.
+EMSCRIPTEN_KEEPALIVE ensures this function is exported to JavaScript.
+====================
+*/
+EMSCRIPTEN_KEEPALIVE void FS_FileDownloadComplete( const char *path, int success )
+{
+	pending_file_t *pf = FS_FindPendingFile( path );
+
+	if( !pf )
+	{
+		// Shouldn't happen, but handle gracefully
+		pf = FS_AddPendingFile( path, success ? FILE_STATE_READY : FILE_STATE_ERROR );
+	}
+	else
+	{
+		pf->state = success ? FILE_STATE_READY : FILE_STATE_ERROR;
+	}
+
+	if( success )
+		Con_Reportf( "Lazy load: file '%s' downloaded successfully\n", path );
+	else
+		Con_Printf( S_WARN "Lazy load: failed to download file '%s'\n", path );
+}
+
+/*
+====================
+FS_CheckEAGAIN
+
+Check if a file should trigger EAGAIN.
+Called when a file is not found on disk.
+Returns true if EAGAIN should be returned (file is being downloaded),
+false if normal error should be returned.
+====================
+*/
+static qboolean FS_CheckEAGAIN( const char *path )
+{
+	file_download_state_t state = FS_GetFileDownloadState( path );
+
+	switch( state )
+	{
+	case FILE_STATE_AVAILABLE:
+		// File is in manifest but not downloaded - request download
+		FS_RequestFileDownload( path );
+		return true;
+	case FILE_STATE_DOWNLOADING:
+		// Download in progress
+		return true;
+	case FILE_STATE_READY:
+		// File should be available now
+		return false;
+	case FILE_STATE_ERROR:
+	case FILE_STATE_UNKNOWN:
+	default:
+		// Not in manifest or download failed
+		return false;
+	}
+}
+
+/*
+====================
+FS_IsEAGAIN_FS
+
+Check if EAGAIN flag is set (filesystem-side).
+This is a "sticky" flag - once set, persists until cleared.
+====================
+*/
+qboolean FS_IsEAGAIN_FS( void )
+{
+	return fs_eagain_pending;
+}
+
+/*
+====================
+FS_ClearEAGAIN_FS
+
+Clear the sticky EAGAIN flag.
+====================
+*/
+void FS_ClearEAGAIN_FS( void )
+{
+	fs_eagain_pending = false;
+}
+
+/*
+====================
+FS_SetEAGAIN
+
+Internal function to set EAGAIN state and errno.
+====================
+*/
+static void FS_SetEAGAIN( void )
+{
+	fs_eagain_pending = true;
+	errno = EAGAIN;
+}
+
+#else // !XASH_EMSCRIPTEN
+
+// Stubs for non-Emscripten builds
+qboolean FS_IsEAGAIN_FS( void ) { return false; }
+void FS_ClearEAGAIN_FS( void ) { }
+
+#endif // XASH_EMSCRIPTEN
+
 const fs_api_t g_api =
 {
 	FS_InitStdio,
@@ -3573,6 +3840,10 @@ const fs_api_t g_api =
 	FS_GetRootDirectory,
 
 	FS_MakeGameInfo,
+
+	// EAGAIN / lazy loading support
+	FS_IsEAGAIN_FS,
+	FS_ClearEAGAIN_FS,
 };
 
 int EXPORT GetFSAPI( int version, fs_api_t *api, fs_globals_t **globals, fs_interface_t *engfuncs );
