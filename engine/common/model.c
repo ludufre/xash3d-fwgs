@@ -286,6 +286,16 @@ model_t *Mod_LoadModel( model_t *mod, qboolean crash )
 
 	if( !buf || length < sizeof( uint ))
 	{
+#ifdef XASH_EMSCRIPTEN
+		// Check if file is being lazy-loaded (EAGAIN)
+		if( FS_IsEAGAIN( ))
+		{
+			// File is being downloaded - don't treat as error, let caller retry later
+			Con_Reportf( "Lazy loading model: %s (will retry)\n", tempname );
+			mod->needload = NL_NEEDS_LOADED;  // Keep marked as needs loading
+			return NULL;  // Return NULL without error - caller should handle gracefully
+		}
+#endif
 		memset( mod, 0, sizeof( model_t ));
 
 		if( crash ) Host_Error( "Could not load model %s from disk\n", tempname );
@@ -453,10 +463,24 @@ Loads in the map and all submodels
 model_t *Mod_LoadWorld( const char *name, qboolean preload )
 {
 	model_t	*pworld;
+	model_t	*result;
 
 	// already loaded?
 	if( !Q_stricmp( mod_known->name, name ))
+	{
+#ifdef XASH_EMSCRIPTEN
+		// On Emscripten with lazy loading, name may be set from previous
+		// Mod_FindName call but data not loaded yet due to EAGAIN.
+		// Check if model data is actually loaded before returning early.
+		if( mod_known->mempool == 0 )
+		{
+			// Name matches but model data not loaded yet - need to continue loading
+			Con_Printf( "EAGAIN: World name matches but not fully loaded, reloading...\n" );
+		}
+		else
+#endif
 		return mod_known;
+	}
 
 	// free sequence files on studiomodels
 	Mod_PurgeStudioCache();
@@ -464,7 +488,18 @@ model_t *Mod_LoadWorld( const char *name, qboolean preload )
 	// load the newmap
 	world.loading = true;
 	pworld = Mod_FindName( name, false );
-	if( preload ) Mod_LoadModel( pworld, true );
+	if( preload )
+	{
+		result = Mod_LoadModel( pworld, true );
+#ifdef XASH_EMSCRIPTEN
+		// If Mod_LoadModel returned NULL due to EAGAIN, propagate that
+		if( !result && FS_IsEAGAIN( ))
+		{
+			world.loading = false;
+			return NULL;
+		}
+#endif
+	}
 	world.loading = false;
 
 	ASSERT( pworld == mod_known );

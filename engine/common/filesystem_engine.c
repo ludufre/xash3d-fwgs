@@ -68,6 +68,125 @@ byte *FS_LoadDirectFile( const char *path, fs_offset_t *filesizeptr )
 	return g_fsapi.LoadDirectFile( path, filesizeptr );
 }
 
+/*
+====================
+FS_IsEAGAIN
+
+Check if any filesystem operation returned EAGAIN (lazy loading in progress).
+Uses the filesystem library's sticky EAGAIN flag.
+Only meaningful on Emscripten builds.
+====================
+*/
+qboolean FS_IsEAGAIN( void )
+{
+#ifdef XASH_EMSCRIPTEN
+	// Use the filesystem library's function
+	if( g_fsapi.IsEAGAIN )
+		return g_fsapi.IsEAGAIN();
+	return false;
+#else
+	return false;
+#endif
+}
+
+/*
+====================
+FS_ClearEAGAIN
+
+Clear the sticky EAGAIN flag. Call this before starting a batch of operations
+that you want to check for EAGAIN after completion.
+====================
+*/
+void FS_ClearEAGAIN( void )
+{
+#ifdef XASH_EMSCRIPTEN
+	// Use the filesystem library's function
+	if( g_fsapi.ClearEAGAIN )
+		g_fsapi.ClearEAGAIN();
+#endif
+}
+
+/*
+====================
+FS_LoadFileWithEAGAIN
+
+Wrapper around FS_LoadFile that returns a specific value to indicate EAGAIN.
+Sets *eagain to true if EAGAIN was returned (file is being downloaded).
+This allows callers to distinguish between "file not found" and "file is loading".
+====================
+*/
+byte *FS_LoadFileWithEAGAIN( const char *path, fs_offset_t *filesizeptr, qboolean gamedironly, qboolean *eagain )
+{
+	byte *result;
+
+	if( eagain )
+		*eagain = false;
+
+	result = g_fsapi.LoadFile( path, filesizeptr, gamedironly );
+
+	if( !result && eagain )
+	{
+#ifdef XASH_EMSCRIPTEN
+		if( errno == EAGAIN )
+			*eagain = true;
+#endif
+	}
+
+	return result;
+}
+
+#ifdef XASH_EMSCRIPTEN
+#include <emscripten.h>
+
+/*
+====================
+FS_FileExistsInManifest
+
+Check if file exists in the JavaScript manifest for lazy loading.
+====================
+*/
+qboolean FS_FileExistsInManifest( const char *path )
+{
+	return EM_ASM_INT({
+		var path = UTF8ToString($0);
+		if( Module.callbacks && Module.callbacks.fileExistsInManifest )
+			return Module.callbacks.fileExistsInManifest({ path: path }) ? 1 : 0;
+		return 0;
+	}, path ) != 0;
+}
+
+/*
+====================
+Engine_FileDownloadComplete
+
+Wrapper function exported to JavaScript that forwards the call to the
+filesystem library's FS_FileDownloadComplete function.
+This is needed because EXPORTED_FUNCTIONS only works with the main module,
+and FS_FileDownloadComplete is defined in the filesystem_stdio side module.
+====================
+*/
+typedef void (*pfnFileDownloadComplete_t)( const char *path, int success );
+static pfnFileDownloadComplete_t pfnFileDownloadComplete = NULL;
+
+EMSCRIPTEN_KEEPALIVE void Engine_FileDownloadComplete( const char *path, int success )
+{
+	// Lazy-load the function pointer from the filesystem library
+	if( !pfnFileDownloadComplete && fs_hInstance )
+	{
+		pfnFileDownloadComplete = (pfnFileDownloadComplete_t)COM_GetProcAddress( fs_hInstance, "FS_FileDownloadComplete" );
+	}
+
+	if( pfnFileDownloadComplete )
+	{
+		pfnFileDownloadComplete( path, success );
+	}
+	else
+	{
+		Con_DPrintf( "Engine_FileDownloadComplete: could not find FS_FileDownloadComplete in filesystem library\n" );
+	}
+}
+#endif // XASH_EMSCRIPTEN
+
 static void COM_StripDirectorySlash( char *pname )
 {
 	size_t len;

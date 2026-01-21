@@ -33,6 +33,25 @@ extern "C"
 {
 #endif
 
+// EAGAIN/lazy loading support for Emscripten
+#ifdef XASH_EMSCRIPTEN
+typedef enum
+{
+	FILE_STATE_UNKNOWN,      // Not in manifest, treat as normal
+	FILE_STATE_AVAILABLE,    // In manifest, not yet downloaded
+	FILE_STATE_DOWNLOADING,  // Currently being downloaded
+	FILE_STATE_READY,        // Downloaded and available in FS
+	FILE_STATE_ERROR         // Download failed
+} file_download_state_t;
+
+typedef struct pending_file_s
+{
+	char path[MAX_SYSPATH];
+	file_download_state_t state;
+	struct pending_file_s *next;
+} pending_file_t;
+#endif // XASH_EMSCRIPTEN
+
 typedef struct searchpath_s searchpath_t;
 typedef struct dir_s dir_t;
 typedef struct zip_s zip_t;
@@ -257,6 +276,16 @@ void FS_InitDirectorySearchpath( searchpath_t *search, const char *path, int fla
 //
 void FS_InitAndroid( void );
 searchpath_t *FS_AddAndroidAssets_Fullpath( const char *path, int flags );
+
+//
+// EAGAIN/lazy loading (Emscripten only)
+//
+#ifdef XASH_EMSCRIPTEN
+qboolean FS_FileExistsInManifest( const char *path );
+file_download_state_t FS_GetFileDownloadState( const char *path );
+qboolean FS_RequestFileDownload( const char *path );
+void FS_FileDownloadComplete( const char *path, int success );
+#endif // XASH_EMSCRIPTEN
 
 #ifdef __cplusplus
 }

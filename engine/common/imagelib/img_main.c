@@ -481,8 +481,16 @@ load_internal:
 
 	if( loadname[0] != '#' )
 	{
-		Con_Reportf( S_WARN "%s: couldn't load \"%s\"\n", __func__, loadname );
-		Image_ReportLookupsCount( filename );
+#ifdef XASH_EMSCRIPTEN
+		// Don't warn if file is being lazy-loaded
+		if( !FS_IsEAGAIN( ))
+		{
+#endif
+			Con_Reportf( S_WARN "%s: couldn't load \"%s\"\n", __func__, loadname );
+			Image_ReportLookupsCount( filename );
+#ifdef XASH_EMSCRIPTEN
+		}
+#endif
 	}
 
 	// clear any force flags

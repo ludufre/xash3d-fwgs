@@ -536,8 +536,10 @@ void CL_BatchResourceRequest( qboolean initialize )
 
 	if( cls.state != ca_disconnected )
 	{
+		Con_Printf( "DEBUG: cl_parse done_downloading=%d\n", done_downloading );
 		if( done_downloading && CL_PrecacheResources( ))
 		{
+			Con_Printf( "DEBUG: cl_parse calling CL_RegisterResources\n" );
 			CL_RegisterResources( &msg, cls.legacymode );
 		}
 
@@ -558,6 +560,11 @@ int CL_EstimateNeededResources( void )
 		case t_sound:
 			if( p->szFileName[0] != '*' && !FS_FileExists( va( DEFAULT_SOUNDPATH "%s", p->szFileName ), false ) )
 			{
+#ifdef XASH_EMSCRIPTEN
+				// If file is in manifest, it will be lazy-loaded - don't mark as missing
+				if( FS_FileExistsInManifest( va( DEFAULT_SOUNDPATH "%s", p->szFileName )))
+					break;
+#endif
 				SetBits( p->ucFlags, RES_WASMISSING );
 				nTotalSize += p->nDownloadSize;
 			}
@@ -565,6 +572,11 @@ int CL_EstimateNeededResources( void )
 		case t_model:
 			if( p->szFileName[0] != '*' && !FS_FileExists( p->szFileName, false ) )
 			{
+#ifdef XASH_EMSCRIPTEN
+				// If file is in manifest, it will be lazy-loaded - don't mark as missing
+				if( FS_FileExistsInManifest( p->szFileName ))
+					break;
+#endif
 				SetBits( p->ucFlags, RES_WASMISSING );
 				nTotalSize += p->nDownloadSize;
 			}
@@ -574,6 +586,11 @@ int CL_EstimateNeededResources( void )
 		case t_eventscript:
 			if( !FS_FileExists( p->szFileName, false ) )
 			{
+#ifdef XASH_EMSCRIPTEN
+				// If file is in manifest, it will be lazy-loaded - don't mark as missing
+				if( FS_FileExistsInManifest( p->szFileName ))
+					break;
+#endif
 				SetBits( p->ucFlags, RES_WASMISSING );
 				nTotalSize += p->nDownloadSize;
 			}
@@ -1763,8 +1780,12 @@ void CL_RegisterResources( sizebuf_t *msg, connprotocol_t proto )
 	model_t	*mod;
 	int	i;
 
+	Con_Printf( "DEBUG: CL_RegisterResources called\n" );
+
 	if( cls.dl.custom || ( cls.signon == SIGNONS && cls.state == ca_active ) )
 	{
+		Con_Printf( "DEBUG: CL_RegisterResources early return (custom=%d, signon=%d, state=%d)\n",
+			cls.dl.custom, cls.signon, cls.state );
 		cls.dl.custom = false;
 		return;
 	}
@@ -1774,6 +1795,7 @@ void CL_RegisterResources( sizebuf_t *msg, connprotocol_t proto )
 
 	// All done precaching.
 	cl.worldmodel = CL_ModelHandle( 1 ); // get world pointer
+	Con_Printf( "DEBUG: worldmodel=%p, maxclients=%d\n", cl.worldmodel, cl.maxclients );
 
 	if( cl.worldmodel && cl.maxclients > 0 )
 	{
@@ -1819,6 +1841,7 @@ void CL_RegisterResources( sizebuf_t *msg, connprotocol_t proto )
 
 			// done with all resources, issue prespawn command.
 			// Include server count in case server disconnects and changes level during d/l
+			Con_Printf( "DEBUG: Sending spawn command to server\n" );
 			MSG_BeginClientCmd( msg, clc_stringcmd );
 			if( proto == PROTO_GOLDSRC )
 			{
@@ -1827,6 +1850,7 @@ void CL_RegisterResources( sizebuf_t *msg, connprotocol_t proto )
 				MSG_WriteStringf( msg, "spawn %i %i", cl.servercount, crc );
 			}
 			else MSG_WriteStringf( msg, "spawn %i", cl.servercount );
+			Con_Printf( "DEBUG: Spawn command queued\n" );
 		}
 	}
 	else

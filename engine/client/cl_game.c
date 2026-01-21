@@ -1334,15 +1334,20 @@ static model_t *CL_LoadSpriteModel( const char *filename, uint type, uint texFla
 	{
 		if( !Q_stricmp( mod->name, name ))
 		{
-			if( mod->needload == NL_NEEDS_LOADED )
+			// If sprite has loaded data, just return it
+			if( mod->mempool != 0 )
 			{
-				if( CL_LoadHudSprite( name, mod, type, texFlags ))
-					return mod;
+				mod->needload = NL_PRESENT;
+				return mod;
 			}
 
-			// prolonge registration
-			mod->needload = NL_PRESENT;
-			return mod;
+			// Sprite in cache but no data - try to load again
+			// This handles EAGAIN case where file download completed
+			if( CL_LoadHudSprite( name, mod, type, texFlags ))
+				return mod;
+
+			// Load failed - return NULL to allow retry on next frame
+			return NULL;
 		}
 	}
 

@@ -64,6 +64,12 @@ qboolean CL_CheckFile( sizebuf_t *msg, resource_t *pResource )
 	if( Host_IsLocalClient() || FS_FileExists( filepath, false ))
 		return true;
 
+#ifdef XASH_EMSCRIPTEN
+	// If file is in manifest, it will be lazy-loaded via EAGAIN mechanism
+	if( FS_FileExistsInManifest( filepath ))
+		return true;
+#endif
+
 	if( cls.demoplayback )
 	{
 		Con_Reportf( S_WARN "file %s missing during demo playback.\n", filepath );
