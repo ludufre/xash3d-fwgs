@@ -40,4 +40,7 @@ addToLibrary({
 
     emscripten_net_getaddrinfo: (hostnamePtr, restrictPrt, hintsPtr, addrinfoPtr) =>
         Module.net?.getaddrinfo?.(hostnamePtr, restrictPrt, hintsPtr, addrinfoPtr) ?? -1,
+
+    emscripten_net_freeaddrinfo: (addrinfoPtr) =>
+        Module.net?.freeaddrinfo?.(addrinfoPtr),
 });

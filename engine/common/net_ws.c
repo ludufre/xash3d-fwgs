@@ -338,10 +338,17 @@ static struct nsthread_s
 
 static void NET_InitializeCriticalSections( void )
 {
+#if XASH_EMSCRIPTEN
+	// On Emscripten, threaded DNS resolution uses Web Workers which don't
+	// have access to Module.net JavaScript context. Skip thread init to
+	// use synchronous resolution instead.
+	net.threads_initialized = false;
+#else
 	net.threads_initialized = true;
 
 	mutex_create( nsthread.mutexns );
 	mutex_create( nsthread.mutexres );
+#endif
 }
 
 static void NET_DeleteCriticalSections( void )
